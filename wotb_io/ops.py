@@ -5,6 +5,7 @@ Three operators, all under File > Import-Export:
     * WOTB_OT_import_scene_sc2   — hangar / battle-map scenes
     * WOTB_OT_export_unity_fbx   — export the scene to a Unity-ready .fbx
 """
+import math
 import os
 import bpy
 from bpy.props import StringProperty, EnumProperty, BoolProperty, FloatProperty
@@ -22,6 +23,133 @@ def _guess_tex_root(path):
         if os.path.basename(p).lower() == "data" and os.path.isdir(p):
             return p
     return os.path.dirname(os.path.abspath(path))
+
+
+# ---------------------------------------------------------------------------
+# Export-time "upright" bake (the Blender→Unity rotate/apply trick).
+#
+# Blender is Z-up, Unity Y-up. Rather than bake_space_transform (which shatters
+# parented hierarchies) we rotate the whole model -90° X, apply the rotation
+# into the mesh data, then rotate +90° X back — the well-known trick that makes
+# Unity import the model upright with an identity root while keeping the
+# hierarchy. The whole scene is snapshotted (vertex positions + object
+# transforms) before and restored after export, so nothing is left changed.
+# ---------------------------------------------------------------------------
+
+def _find_view3d_ctx(context):
+    for window in context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type == "VIEW_3D":
+                region = next((r for r in area.regions if r.type == "WINDOW"), None)
+                if region is not None:
+                    return {"window": window, "area": area, "region": region}
+    return None
+
+
+def _snapshot(objs):
+    basis = {o: o.matrix_basis.copy() for o in objs}
+    pinv = {o: o.matrix_parent_inverse.copy() for o in objs}
+    meshes = {}
+    for o in objs:
+        me = o.data
+        if o.type == "MESH" and me is not None and me not in meshes:
+            arr = [0.0] * (len(me.vertices) * 3)
+            me.vertices.foreach_get("co", arr)
+            meshes[me] = arr
+    return basis, pinv, meshes
+
+
+def _restore_snapshot(basis, pinv, meshes):
+    for me, arr in meshes.items():
+        me.vertices.foreach_set("co", arr)
+        me.update()
+    for o, m in pinv.items():
+        o.matrix_parent_inverse = m
+    for o, m in basis.items():
+        o.matrix_basis = m
+
+
+def _bake_upright(context, objs):
+    """Rotate/apply so the export is upright in Unity. Returns a restore
+    callback, or None if it could not run (export proceeds un-baked)."""
+    ov = _find_view3d_ctx(context)
+    if ov is None:
+        print("[wotb_io] upright bake: no 3D viewport found, exporting as-is")
+        return None
+
+    objs = [o for o in objs if o.type in {"MESH", "EMPTY"}]
+    if not objs:
+        return None
+
+    ts = context.scene.tool_settings
+    vl = context.view_layer
+    basis, pinv, meshes = _snapshot(objs)
+    obj_hide = [(o, o.hide_get(), o.hide_select, o.hide_viewport) for o in objs]
+    coll_hide = [(c, c.hide_viewport) for c in bpy.data.collections]
+    prev_pivot = ts.transform_pivot_point
+    prev_active = vl.objects.active
+    prev_sel = [o for o in vl.objects if o.select_get()]
+
+    def restore():
+        _restore_snapshot(basis, pinv, meshes)
+        try:
+            ts.transform_pivot_point = prev_pivot
+        except Exception:
+            pass
+        for c, hv in coll_hide:
+            c.hide_viewport = hv
+        for o, hg, hs, hv in obj_hide:
+            o.hide_viewport = hv
+            o.hide_select = hs
+            try:
+                o.hide_set(hg)
+            except Exception:
+                pass
+        for o in vl.objects:
+            try:
+                o.select_set(o in prev_sel)
+            except Exception:
+                pass
+        vl.objects.active = prev_active
+        context.view_layer.update()
+
+    try:
+        for c, _ in coll_hide:
+            c.hide_viewport = False
+        for o, *_ in obj_hide:
+            o.hide_viewport = False
+            o.hide_select = False
+            try:
+                o.hide_set(False)
+            except Exception:
+                pass
+        context.view_layer.update()
+
+        with context.temp_override(**ov):
+            if context.object and context.object.mode != "OBJECT":
+                bpy.ops.object.mode_set(mode="OBJECT")
+            bpy.ops.object.select_all(action="DESELECT")
+            for o in objs:
+                o.select_set(True)
+            vl.objects.active = objs[0]
+            ts.transform_pivot_point = "INDIVIDUAL_ORIGINS"
+            bpy.ops.transform.rotate(value=math.radians(-90),
+                                     orient_axis="X", orient_type="GLOBAL")
+            bpy.ops.object.transform_apply(rotation=True, location=False,
+                                           scale=False)
+            bpy.ops.transform.rotate(value=math.radians(90),
+                                     orient_axis="X", orient_type="GLOBAL")
+        context.view_layer.update()
+        return restore
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"[wotb_io] upright bake failed, exporting as-is: {e}")
+        try:
+            restore()
+        except Exception:
+            pass
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -389,17 +517,15 @@ class WOTB_OT_export_unity_fbx(bpy.types.Operator, ExportHelper):
     )
 
     apply_transform: BoolProperty(
-        name="Apply transform (flat objects only)",
+        name="Upright for Unity",
         description=(
-            "Bake Blender's Z-up → Unity Y-up axis conversion into the mesh "
-            "data (FBX 'Apply Transform') so Unity asset previews stand upright. "
-            "WARNING: this corrupts PARENTED HIERARCHIES — a tank's turret / "
-            "wheels fold up and scatter, and baked animations break. Leave it "
-            "OFF for tanks and hangars (the model is still correct in a scene; "
-            "only the preview thumbnail is tipped). Enable only for a single "
-            "flat mesh with no parenting"
+            "Bake the Z-up → Y-up orientation so the model stands upright in "
+            "Unity with an identity root (rotate -90° X → apply → rotate +90° X "
+            "trick). Keeps the parented hierarchy intact, unlike the FBX "
+            "'Apply Transform' bake. The scene is snapshotted and restored "
+            "around the export, so nothing is left changed here"
         ),
-        default=False,
+        default=True,
     )
 
     def execute(self, context):
@@ -424,17 +550,33 @@ class WOTB_OT_export_unity_fbx(bpy.types.Operator, ExportHelper):
             axis_up="Y",
             axis_forward="-Z",
             apply_scale_options="FBX_SCALE_ALL",
-            bake_space_transform=self.apply_transform,
+            # Orientation is handled by our own snapshot-safe upright bake below
+            # (bake_space_transform shatters parented hierarchies).
+            bake_space_transform=False,
             path_mode="AUTO",
         )
+
+        restore = None
+        if self.apply_transform:
+            if self.selection_only:
+                objs = list(context.selected_objects)
+            else:
+                objs = list(context.scene.objects)
+            restore = _bake_upright(context, objs)
+
         try:
-            bpy.ops.export_scene.fbx(**kwargs)
-        except TypeError:
-            safe = {k: v for k, v in kwargs.items() if k in (
-                "filepath", "use_selection", "object_types",
-                "use_custom_props", "bake_anim", "axis_up", "axis_forward",
-            )}
-            bpy.ops.export_scene.fbx(**safe)
+            try:
+                bpy.ops.export_scene.fbx(**kwargs)
+            except TypeError:
+                safe = {k: v for k, v in kwargs.items() if k in (
+                    "filepath", "use_selection", "object_types",
+                    "use_custom_props", "bake_anim", "axis_up", "axis_forward",
+                )}
+                bpy.ops.export_scene.fbx(**safe)
+        finally:
+            if restore is not None:
+                restore()
+
         self.report({"INFO"}, f"Wrote {self.filepath}")
         return {"FINISHED"}
 

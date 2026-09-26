@@ -50,10 +50,11 @@ wotb_io/
   - `Tools > WoTB > Setup Colliders On Selection` turns every `*_collider`
     object into a convex `MeshCollider` and strips its renderer, so the tank
     collides with the world without drawing the collision shells.
-  - `Tools > WoTB > Fix Orientation (Bake Axis Conversion)` enables Unity's
-    Bake Axis Conversion on the selected model(s) so the tank stands upright
-    (Blender is Z-up, Unity Y-up). Use this instead of the exporter's "Apply
-    transform", which breaks the parented hierarchy.
+  - `Tools > WoTB > Fix Orientation (Bake Axis Conversion)` — *optional
+    fallback.* The FBX exporter's "Upright for Unity" option already bakes the
+    orientation at export time, so models come in upright. Use this only if you
+    exported with that option off; it enables Unity's Bake Axis Conversion on
+    the selected model(s).
 - **`WotbHangarFx.cs`** *(not in this repo yet)* — the hangar/map round-trip
   relies on a companion script that rebuilds animated ParticleSystems and
   lights from the exported `WOTBFX_*` markers.

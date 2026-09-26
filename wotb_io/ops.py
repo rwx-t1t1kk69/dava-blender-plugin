@@ -41,10 +41,12 @@ class WOTB_OT_import_sc2(bpy.types.Operator, ImportHelper):
         name="LODs",
         description="Which levels of detail to import",
         items=[
-            ("lod0", "LOD 0 only", "Highest quality only (recommended)"),
-            ("all", "All LODs", "Import every LOD; non-zero LODs are hidden"),
+            ("all", "All LODs", "Import every LOD, split into per-LOD "
+                                "collections (<file>_LOD0, _LOD1, …); LOD1+ "
+                                "are hidden by default"),
+            ("lod0", "LOD 0 only", "Highest quality only"),
         ],
-        default="lod0",
+        default="all",
     )
 
     guess_tex_root: BoolProperty(

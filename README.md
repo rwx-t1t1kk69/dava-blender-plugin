@@ -12,7 +12,7 @@ DAVA parsing core instead of duplicating it.
 
 | Menu | What it does |
 |------|--------------|
-| `File > Import > WoTB 3.10 Tank (.sc2)` | Tank models: meshes, materials, LODs, armor-thickness heatmap overlay, physics collision hull (rigid body), crash-part filtering |
+| `File > Import > WoTB 3.10 Tank (.sc2)` | Tank models: meshes, materials, hardpoints, all LODs split into per-LOD collections (`<file>_LOD0`, `_LOD1`, … — LOD1+ hidden by default), armor-thickness heatmap overlay, physics collision hull (rigid body), crash-part filtering |
 | `File > Import > WoTB 3.10 Hangar / Map (.sc2)` | Scenes: meshes, materials, heightmap landscape, lights, lamp/smoke/particle & sound marker empties, baked animations |
 | `File > Export > WoTB Scene → Unity (.fbx)` | Y-up / -Z-forward FBX carrying `wotb_*` custom props and `WOTBFX_*` markers for the Unity editor script |
 

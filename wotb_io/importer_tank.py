@@ -274,6 +274,11 @@ def _build_mesh_from_polygroup(scene, pg, name):
     return me
 
 
+def _lod_key(lod):
+    """Normalise a batch LOD index to a non-negative int (-1 / None -> 0)."""
+    return 0 if lod in (None, -1) else int(lod)
+
+
 def _batch_uses_shadow_volume(scene, batch):
     """A RenderBatch is a shadow-volume proxy if its material chain resolves
     to `~res:/Materials/ShadowVolume.material` — those meshes are the source
@@ -318,10 +323,13 @@ class WOTBImporter:
         self._built_meshes = []
         self.collision_obj = None
         self.armor_root = None
+        self._root_collection = None
+        self._lod_collections = {}   # lod int -> bpy.types.Collection
 
     def run(self):
         scene = sc2_reader.load_sc2(self.path)
         collection = self._prepare_collection()
+        self._root_collection = collection
         # Build a placeholder root empty for the file's top-level scene node.
         # DAVA typically has 1 root ("MaxScene"); we still make a group.
         file_root = bpy.data.objects.new(os.path.basename(self.path), None)
@@ -356,6 +364,23 @@ class WOTBImporter:
         bpy.context.scene.collection.children.link(col)
         return col
 
+    def _lod_collection(self, lod):
+        """Return (creating on first use) the `<file>_LOD<n>` sub-collection
+        for this LOD level. Every LOD is imported; LOD1+ collections are hidden
+        by default so only LOD0 shows and the levels don't Z-fight."""
+        key = _lod_key(lod)
+        col = self._lod_collections.get(key)
+        if col is None:
+            base = os.path.splitext(os.path.basename(self.path))[0]
+            col = bpy.data.collections.new(f"{base}_LOD{key}")
+            parent = self._root_collection or bpy.context.scene.collection
+            parent.children.link(col)
+            if key != 0:
+                col.hide_viewport = True
+                col.hide_render = True
+            self._lod_collections[key] = col
+        return col
+
     def _import_entity(self, scene, entity, parent, collection):
         name = entity.get("name") or "Entity"
         if self.skip_crash_variants and "crash" in name.lower():
@@ -384,7 +409,7 @@ class WOTBImporter:
             batches = [b for b in batches if not _batch_uses_shadow_volume(scene, b)]
 
         if not batches:
-            # Empty (transform-only) helper.
+            # Empty (transform-only) helper — hardpoints (HP_*), markers, etc.
             obj = bpy.data.objects.new(name, None)
             obj.empty_display_type = "PLAIN_AXES"
             obj.empty_display_size = 0.2
@@ -392,25 +417,28 @@ class WOTBImporter:
             return obj
 
         if len(batches) == 1:
-            b = batches[0]
-            return self._build_batch_object(scene, b, name, collection)
+            return self._build_batch_object(scene, batches[0], name)
 
-        # Multiple batches (e.g. LODs, or several materials per entity):
-        # create an empty and parent one child per batch under it.
+        # Multiple batches — usually the same part at several LOD levels (and
+        # occasionally several materials at one LOD). Keep them under one group
+        # empty for the entity; each mesh is named <part>_LOD<n> and lands in
+        # the matching <file>_LOD<n> collection.
         group = bpy.data.objects.new(name, None)
         group.empty_display_type = "PLAIN_AXES"
         group.empty_display_size = 0.2
         collection.objects.link(group)
-        for i, b in enumerate(batches):
-            sub_name = f"{name}_lod{b.get('__lodIndex', 0)}_b{i}"
-            sub = self._build_batch_object(scene, b, sub_name, collection)
+
+        counts = {}
+        for b in batches:
+            lod = _lod_key(b.get("__lodIndex", 0))
+            n = counts.get(lod, 0)
+            counts[lod] = n + 1
+            sub_name = f"{name}_LOD{lod}" + (f"_b{n}" if n else "")
+            sub = self._build_batch_object(scene, b, sub_name)
             sub.parent = group
-            if b.get("__lodIndex", 0) != 0:
-                sub.hide_set(True)
-                sub.hide_render = True
         return group
 
-    def _build_batch_object(self, scene, batch, name, collection):
+    def _build_batch_object(self, scene, batch, name):
         pgid = batch.get("rb.datasource")
         matid = batch.get("rb.nmatname")
         pg = scene.polygroups.get(pgid)
@@ -419,7 +447,9 @@ class WOTBImporter:
 
         mesh = _build_mesh_from_polygroup(scene, pg, name)
         obj = bpy.data.objects.new(name, mesh)
-        collection.objects.link(obj)
+        # Link into the per-LOD collection so all LODs import but stay separated.
+        lod = _lod_key(batch.get("__lodIndex", 0))
+        self._lod_collection(lod).objects.link(obj)
 
         mat = _make_or_reuse_material(
             scene, matid, self.mat_cache, self.sc2_dir, self.data_root,
@@ -429,7 +459,7 @@ class WOTBImporter:
 
         _set_int_prop(obj, "wotb_pgid", pgid if pgid is not None else -1)
         _set_int_prop(obj, "wotb_matid", matid if matid is not None else -1)
-        _set_int_prop(obj, "wotb_lod", batch.get("__lodIndex", 0))
+        _set_int_prop(obj, "wotb_lod", lod)
         self._built_meshes.append(obj)
         return obj
 
@@ -578,6 +608,8 @@ class WOTBImporter:
         for obj in self._built_meshes:
             if obj.type != "MESH" or obj.data is None:
                 continue
+            if int(obj.get("wotb_lod", 0)) != 0:
+                continue   # only the visible LOD0 shell feeds the fallback hull
             if not self._name_included(obj):
                 continue
             kept.append(obj.name)

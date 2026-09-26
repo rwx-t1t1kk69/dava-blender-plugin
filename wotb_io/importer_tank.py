@@ -475,20 +475,15 @@ class WOTBImporter:
         self._built_meshes.append(obj)
         return obj
 
-    # ---------------- collision (convex hull per part) ----------------
+    # ---------------- collision (single convex hull) ----------------
     #
-    # A tank collider should hug the hull and the turret as SEPARATE convex
-    # shells — not one big convex bag that fills the gap under the gun and
-    # between the turret and the roof, and not the exact concave hitbox (which
-    # a physics engine can't use as a single convex collider). We build one
-    # convex hull per part from the game's own CollisionMeshes hitbox when it
-    # is available, else from the visual LOD0 meshes.
-    #
-    # Each shell is a clean low-poly convex mesh named `<file>_collider_<part>`,
-    # tagged `wotb_collider = "convex"` and hidden from render. In Unity add a
-    # MeshCollider with Convex enabled to each and remove its MeshRenderer
-    # (the bundled `unity/Editor/WotbColliders.cs` does this automatically for
-    # objects whose name contains `_collider_`).
+    # One convex hull wrapping the hull AND the turret together, built from the
+    # already-placed visual LOD0 hull/turret meshes (gun, tracks, wheels and
+    # hardpoints excluded). The result is a clean low-poly convex mesh named
+    # `<file>_collider`, tagged `wotb_collider = "convex"` and hidden from
+    # render. In Unity add a MeshCollider with Convex enabled and remove its
+    # MeshRenderer (the bundled `unity/Editor/WotbColliders.cs` does this
+    # automatically for objects whose name contains `_collider`).
 
     @staticmethod
     def _collision_group_of(name):
@@ -500,90 +495,52 @@ class WOTBImporter:
             return "turret"
         return None
 
-    def _collect_collision_groups(self):
-        """Return {'hull': [(x,y,z)…], 'turret': [...]} in visual-scene space.
+    def _collect_collision_verts(self):
+        """World-space vertices of the visual LOD0 hull + turret meshes.
 
-        Prefers the game's CollisionMeshes hitbox (already low-poly, aligned to
-        the visual hull); falls back to the visual LOD0 hull/turret meshes."""
-        groups = {}
-        scene, entities, z_off = armor_mod.build_collision_source(self.path)
-        if scene and entities:
-            for e in entities:
-                grp = self._collision_group_of(e.get("name"))
-                if grp is None:
-                    continue
-                M = _dava_matrix_to_blender(sc2_reader.get_transform_matrix(e))
-                bucket = groups.setdefault(grp, [])
-                for b in sc2_reader.get_render_batches(e):
-                    pg = scene.polygroups.get(b.get("rb.datasource"))
-                    if not pg:
-                        continue
-                    streams = vf.parse_vertices(
-                        pg["vertices"], pg["vertexFormat"], pg["vertexCount"],
-                    )
-                    for p in streams.get("position") or []:
-                        co = M @ Vector((p[0], p[1], p[2]))
-                        bucket.append((co.x, co.y, co.z + z_off))
-            if any(groups.values()):
-                return groups
-
-        # Fallback: the imported visual LOD0 hull / turret meshes.
-        groups = {}
+        Source the collider from the already-placed visual meshes (their world
+        transforms are correct) rather than the CollisionMeshes file, whose
+        per-entity local matrices were landing the turret shell too low / in the
+        wrong place."""
+        verts = []
         for obj in self._built_meshes:
             if obj.type != "MESH" or obj.data is None:
                 continue
             if int(obj.get("wotb_lod", 0)) != 0:
                 continue
-            grp = self._collision_group_of(obj.name)
-            if grp is None:
+            if self._collision_group_of(obj.name) is None:
                 continue
             M = obj.matrix_world
-            bucket = groups.setdefault(grp, [])
             for v in obj.data.vertices:
                 co = M @ v.co
-                bucket.append((co.x, co.y, co.z))
-        return groups
+                verts.append((co.x, co.y, co.z))
+        return verts
 
     def _build_colliders(self, file_root, collection):
-        groups = self._collect_collision_groups()
-        if not any(groups.values()):
+        # ONE convex hull wrapping the hull and the turret together, placed from
+        # the visual meshes' world transforms.
+        bpy.context.view_layer.update()   # make matrix_world current
+        verts = self._collect_collision_verts()
+        if len(verts) < 4:
             print("[wotb_io] collision: no hull/turret geometry found, skipping")
             self.collision_summary = "none"
             return None
 
         base = os.path.splitext(os.path.basename(self.path))[0]
-        root = bpy.data.objects.new(f"{base}_collision", None)
-        root.empty_display_type = "CUBE"
-        root.empty_display_size = 0.3
-        collection.objects.link(root)
-        root.parent = file_root
-        root["wotb_collision"] = True
-
-        pieces = 0
-        faces = 0
-        for grp in ("hull", "turret"):
-            verts = groups.get(grp)
-            if not verts:
-                continue
-            obj = self._make_convex_collider(
-                f"{base}_collider_{grp}", verts, collection, root,
-            )
-            if obj is None:
-                continue
-            pieces += 1
-            faces += len(obj.data.polygons)
-            if self.collision_rigid_body:
-                self._try_add_rigid_body(obj)
-
-        if pieces == 0:
-            bpy.data.objects.remove(root, do_unlink=True)
+        obj = self._make_convex_collider(
+            f"{base}_collider", verts, collection, file_root,
+        )
+        if obj is None:
             self.collision_summary = "none"
             return None
+        obj["wotb_collision"] = True
+        if self.collision_rigid_body:
+            self._try_add_rigid_body(obj)
 
-        self.collision_obj = root
-        self.collision_summary = f"{pieces} pieces, {faces} faces"
+        self.collision_obj = obj
+        self.collision_summary = f"1 piece, {len(obj.data.polygons)} faces"
         print(f"[wotb_io] collision: built {self.collision_summary}")
-        return root
+        return obj
 
     def _make_convex_collider(self, name, verts, collection, parent):
         """Build one clean convex-hull mesh object wrapping `verts`."""

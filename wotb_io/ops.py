@@ -97,10 +97,9 @@ class WOTB_OT_import_sc2(bpy.types.Operator, ImportHelper):
     generate_collision: BoolProperty(
         name="Generate collision",
         description=(
-            "Build convex collider shells that wrap the hull and the turret "
-            "separately (one convex hull per part) from the game's "
-            "CollisionMeshes hitbox, or the visual mesh as a fallback. Each "
-            "piece is named `<file>_collider_<part>`, hidden from render, and "
+            "Build a single convex collider that wraps the hull and the turret "
+            "together, from the visual hull/turret meshes (gun, tracks and "
+            "wheels excluded). Named `<file>_collider`, hidden from render, and "
             "tagged for a Unity MeshCollider (Convex)"
         ),
         default=True,

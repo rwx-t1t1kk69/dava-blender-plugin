@@ -20,7 +20,7 @@ using UnityEngine;
 public static class WotbColliders
 {
     // Objects whose name contains this token are treated as collider shells.
-    private const string ColliderToken = "_collider_";
+    private const string ColliderToken = "_collider";
 
     [MenuItem("Tools/WoTB/Setup Colliders On Selection")]
     private static void SetupOnSelection()

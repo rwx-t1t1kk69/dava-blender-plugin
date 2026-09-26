@@ -359,8 +359,10 @@ class WOTBImporter:
 
         if _ARMOR_ENABLED and self.load_armor:
             try:
+                bpy.context.view_layer.update()
                 self.armor_root = armor_mod.load_armor(
-                    self.path, collection, file_root, visual_scene=scene,
+                    self.path, collection, file_root,
+                    visual_bboxes=self._visual_group_bboxes(),
                 )
             except Exception as e:
                 print(f"[wotb_io] armor: failed: {e}")
@@ -494,6 +496,33 @@ class WOTBImporter:
         if n.startswith("turret"):
             return "turret"
         return None
+
+    def _visual_group_bboxes(self):
+        """World-space bounding boxes of the visual LOD0 hull / turret meshes,
+        keyed by collider group. Used to snap the armor shells onto the parts
+        they belong to, regardless of the collision file's coordinate frame."""
+        boxes = {}
+        for obj in self._built_meshes:
+            if obj.type != "MESH" or obj.data is None:
+                continue
+            if int(obj.get("wotb_lod", 0)) != 0:
+                continue
+            grp = self._collision_group_of(obj.name)
+            if grp is None:
+                continue
+            M = obj.matrix_world
+            for v in obj.data.vertices:
+                co = M @ v.co
+                b = boxes.get(grp)
+                if b is None:
+                    boxes[grp] = [list(co), list(co)]
+                else:
+                    for i in range(3):
+                        if co[i] < b[0][i]:
+                            b[0][i] = co[i]
+                        if co[i] > b[1][i]:
+                            b[1][i] = co[i]
+        return {g: (tuple(mn), tuple(mx)) for g, (mn, mx) in boxes.items()}
 
     def _collect_collision_verts(self):
         """World-space vertices of the visual LOD0 hull + turret meshes.

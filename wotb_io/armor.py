@@ -246,16 +246,40 @@ def _entity_armor_geometry(scene, entity):
 # Build
 # ---------------------------------------------------------------------------
 
-def load_armor(tank_sc2_path, collection, parent_obj, visual_scene=None,
+def _armor_group_of(name):
+    n = (name or "").lower()
+    if n.startswith("hull"):
+        return "hull"
+    if n.startswith("turret"):
+        return "turret"
+    return None
+
+
+def _bbox(verts):
+    mn = [verts[0][0], verts[0][1], verts[0][2]]
+    mx = [verts[0][0], verts[0][1], verts[0][2]]
+    for x, y, z in verts:
+        if x < mn[0]: mn[0] = x
+        if y < mn[1]: mn[1] = y
+        if z < mn[2]: mn[2] = z
+        if x > mx[0]: mx[0] = x
+        if y > mx[1]: mx[1] = y
+        if z > mx[2]: mx[2] = z
+    return mn, mx
+
+
+def load_armor(tank_sc2_path, collection, parent_obj, visual_bboxes=None,
                panel_offset=0.02):
     """Import the CollisionMeshes hitbox as an armor overlay with per-vertex
     thickness baked into a UV channel (`armor_mm`, mm in .x) for the Unity
     shader, plus a vertex-colour heatmap for Blender preview.
 
-    Each armor part is placed with the matching VISUAL entity's world transform
-    (hull → visual hull, turret_01 → visual turret_01) so it lines up with the
-    rendered model. The collision file's own transforms sit the turret too low,
-    so they are only a fallback for parts with no visual match.
+    The shell is built per group (hull, turret) using the collision file's own
+    transforms for the correct relative shape, then each group is translated so
+    its bounding-box centre matches the matching VISUAL part's bounding box
+    (passed in `visual_bboxes`). This snaps the armor onto the rendered model
+    regardless of the collision file's coordinate frame — trusting the raw
+    transforms sat the turret inside the hull.
 
     Returns the parent Empty holding the armor pieces, or None."""
     coll_path = find_collision_file(tank_sc2_path)
@@ -264,19 +288,29 @@ def load_armor(tank_sc2_path, collection, parent_obj, visual_scene=None,
         return None
 
     scene = sc2_reader.load_sc2(coll_path)
+    vb = visual_bboxes or {}
 
-    # Placement comes from the visual scene: {part name -> world matrix}.
-    vis_world = {}
-    if visual_scene is not None:
-        for e, w in _entity_world_matrices(visual_scene):
-            n = e.get("name")
-            if n and n not in vis_world:
-                vis_world[n] = w
+    # Gather geometry per group, positioned by the collision transforms so the
+    # parts keep their correct relative layout inside the group.
+    groups = {}
+    for entity, cworld in _entity_world_matrices(scene):
+        grp = _armor_group_of(entity.get("name"))
+        if grp is None:
+            continue
+        rv, rt, rk = _entity_armor_geometry(scene, entity)
+        if not rv or not rt:
+            continue
+        g = groups.setdefault(grp, {"verts": [], "tris": [], "thk": []})
+        offset = len(g["verts"])
+        for p in rv:
+            co = cworld @ Vector((p[0], p[1], p[2]))
+            g["verts"].append((co.x, co.y, co.z))
+        for (a, b, c) in rt:
+            g["tris"].append((offset + a, offset + b, offset + c))
+        g["thk"].extend(rk)
 
-    # Fallback for parts absent from the visual scene: collision transform,
-    # shifted to the visual hull's belly height.
-    _, _, dz = compute_collision_alignment(tank_sc2_path, scene)
-    dz_shift = Matrix.Translation((0.0, 0.0, dz))
+    if not groups:
+        return None
 
     base = os.path.splitext(os.path.basename(tank_sc2_path))[0]
     root = bpy.data.objects.new(f"{base}_armor", None)
@@ -289,29 +323,26 @@ def load_armor(tank_sc2_path, collection, parent_obj, visual_scene=None,
     mat = _make_armor_material()
     built = 0
     tmin, tmax = 1e30, -1e30
-    for entity, coll_world in _entity_world_matrices(scene):
-        verts, tris, thickness = _entity_armor_geometry(scene, entity)
+    for grp, g in groups.items():
+        verts, tris, thickness = g["verts"], g["tris"], g["thk"]
         if not verts or not tris:
             continue
 
-        # Prefer the visual part's placement; the collision entity's raw verts
-        # are in the same part-local space, so the visual world matrix lands
-        # them exactly on the rendered part.
-        place = vis_world.get(entity.get("name"))
-        if place is None:
-            place = dz_shift @ coll_world
+        # Snap the group's bbox centre onto the visual part's bbox centre.
+        if grp in vb:
+            amn, amx = _bbox(verts)
+            vmn, vmx = vb[grp]
+            dxc = (vmn[0] + vmx[0]) * 0.5 - (amn[0] + amx[0]) * 0.5
+            dyc = (vmn[1] + vmx[1]) * 0.5 - (amn[1] + amx[1]) * 0.5
+            dzc = (vmn[2] + vmx[2]) * 0.5 - (amn[2] + amx[2]) * 0.5
+            verts = [(x + dxc, y + dyc, z + dzc) for (x, y, z) in verts]
 
-        wverts = []
-        for p in verts:
-            co = place @ Vector((p[0], p[1], p[2]))
-            wverts.append((co.x, co.y, co.z))
-
-        name = f"{entity.get('name') or 'part'}_armor"
+        name = f"{grp}_armor"
         me = bpy.data.meshes.new(name)
-        me.from_pydata(wverts, [], tris)
+        me.from_pydata(verts, [], tris)
 
-        # Thickness → UV channel (float, no quantisation). Only UV set on the
-        # mesh, so it exports as TEXCOORD0; the shader reads uv.x as mm.
+        # Thickness → UV channel (float). Only UV set, so it exports as
+        # TEXCOORD0; the Unity shader reads uv.x as mm.
         uv = me.uv_layers.new(name="armor_mm")
         for loop in me.loops:
             vi = loop.vertex_index
@@ -333,9 +364,6 @@ def load_armor(tank_sc2_path, collection, parent_obj, visual_scene=None,
         me.update()
         me.validate(clean_customdata=False)
 
-        # Lift the shell slightly off the surface along vertex normals so it
-        # reads as a clean overlay just above the tank instead of z-fighting
-        # the visual mesh (and without the X-ray look of show_in_front).
         if panel_offset:
             for v in me.vertices:
                 v.co += v.normal * panel_offset

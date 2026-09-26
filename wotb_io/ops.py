@@ -88,9 +88,10 @@ class WOTB_OT_import_sc2(bpy.types.Operator, ImportHelper):
             "`CollisionMeshes/<nation>-<tank>.sc2`, painted with a "
             "green→yellow→red heatmap by plate thickness (mm). The overlay "
             "sits over the hull, is hidden from render, and each part is "
-            "tagged with `wotb_armor_min_mm` / `wotb_armor_max_mm`"
+            "tagged with `wotb_armor_min_mm` / `wotb_armor_max_mm`. "
+            "(Temporarily disabled in code.)"
         ),
-        default=True,
+        default=False,
     )
 
     generate_collision: BoolProperty(
@@ -98,9 +99,9 @@ class WOTB_OT_import_sc2(bpy.types.Operator, ImportHelper):
         description=(
             "Build a simplified convex-hull shell of the whole tank made of "
             "large flat polygons — used for physics collisions instead of the "
-            "detailed visual mesh"
+            "detailed visual mesh. (Temporarily disabled in code.)"
         ),
-        default=True,
+        default=False,
     )
 
     collision_dissolve_deg: FloatProperty(

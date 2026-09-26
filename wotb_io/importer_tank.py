@@ -14,6 +14,11 @@ from . import armor as armor_mod
 _C_INT_MIN = -(1 << 31)
 _C_INT_MAX = (1 << 31) - 1
 
+# Temporarily disabled per user request. Set back to True to restore the armor
+# overlay and the physics collision hull (the operator toggles are ignored
+# while this is False).
+_ARMOR_COLLISION_ENABLED = False
+
 
 def _set_alpha_clip(mat):
     """Configure the material for alpha-clip / dithered rendering across
@@ -342,10 +347,10 @@ class WOTBImporter:
             self._import_entity(scene, root_entity, parent=file_root, collection=collection)
 
         self.collision_obj = None
-        if self.generate_collision:
+        if _ARMOR_COLLISION_ENABLED and self.generate_collision:
             self.collision_obj = self._build_collision_hull(file_root, collection)
 
-        if self.load_armor:
+        if _ARMOR_COLLISION_ENABLED and self.load_armor:
             try:
                 self.armor_root = armor_mod.load_armor(
                     self.path, collection, file_root,

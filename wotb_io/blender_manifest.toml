@@ -1,0 +1,14 @@
+schema_version = "1.0.0"
+
+id = "wotb_dava_io"
+version = "0.2.0"
+name = "WoTB 3.10 DAVA I/O (Tanks + Hangars)"
+tagline = "Import World of Tanks Blitz 3.10 tanks, hangars and maps (.sc2)"
+maintainer = "titovkostya09042010@gmail.com"
+type = "add-on"
+
+blender_version_min = "4.2.0"
+
+license = ["SPDX:MIT"]
+
+tags = ["Import-Export"]

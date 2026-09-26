@@ -510,17 +510,40 @@ class WOTBImporter:
                 continue
             if self._collision_group_of(obj.name) is None:
                 continue
+            if "antenna" in obj.name.lower():
+                continue   # thin vertical spike — would blow up the hull
             M = obj.matrix_world
             for v in obj.data.vertices:
                 co = M @ v.co
                 verts.append((co.x, co.y, co.z))
         return verts
 
+    @staticmethod
+    def _trim_top_outliers(verts, body_pct=0.90, margin=0.12):
+        """Drop the few vertices that stick far above the body (antennas,
+        flag poles). Keeps everything up to the `body_pct` height percentile
+        plus a `margin` of the total height, so the turret roof / cupola stay
+        but a thin spike far above the bulk is cut."""
+        if len(verts) < 20:
+            return verts
+        zs = sorted(v[2] for v in verts)
+        zmin, zmax = zs[0], zs[-1]
+        span = zmax - zmin
+        if span <= 1e-6:
+            return verts
+        z_body = zs[int(body_pct * (len(zs) - 1))]
+        cap = z_body + margin * span
+        if cap >= zmax:
+            return verts   # nothing sticks out
+        trimmed = [v for v in verts if v[2] <= cap]
+        return trimmed if len(trimmed) >= 4 else verts
+
     def _build_colliders(self, file_root, collection):
         # ONE convex hull wrapping the hull and the turret together, placed from
         # the visual meshes' world transforms.
         bpy.context.view_layer.update()   # make matrix_world current
         verts = self._collect_collision_verts()
+        verts = self._trim_top_outliers(verts)
         if len(verts) < 4:
             print("[wotb_io] collision: no hull/turret geometry found, skipping")
             self.collision_summary = "none"

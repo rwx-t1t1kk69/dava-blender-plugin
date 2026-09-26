@@ -84,14 +84,13 @@ class WOTB_OT_import_sc2(bpy.types.Operator, ImportHelper):
     load_armor: BoolProperty(
         name="Load armor overlay",
         description=(
-            "Also import the matching collision mesh from "
-            "`CollisionMeshes/<nation>-<tank>.sc2`, painted with a "
-            "green→yellow→red heatmap by plate thickness (mm). The overlay "
-            "sits over the hull, is hidden from render, and each part is "
-            "tagged with `wotb_armor_min_mm` / `wotb_armor_max_mm`. "
-            "(Temporarily disabled in code.)"
+            "Import the matching `CollisionMeshes/<nation>-<tank>.sc2` hitbox "
+            "as an armor overlay. Per-vertex plate thickness (mm) is baked into "
+            "a UV channel (`armor_mm`) for a Unity armor-inspection shader, plus "
+            "a green→yellow→red heatmap for Blender preview. Each part is tagged "
+            "`wotb_armor` with `wotb_armor_min_mm` / `wotb_armor_max_mm`"
         ),
-        default=False,
+        default=True,
     )
 
     generate_collision: BoolProperty(

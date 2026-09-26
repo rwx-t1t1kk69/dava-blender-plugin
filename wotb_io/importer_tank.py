@@ -14,10 +14,8 @@ from . import armor as armor_mod
 _C_INT_MIN = -(1 << 31)
 _C_INT_MAX = (1 << 31) - 1
 
-# Collision colliders are back on (new convex-per-part builder). The armor
-# overlay stays temporarily disabled. Flip either flag to toggle; the operator
-# checkboxes are ignored while its flag is False.
-_ARMOR_ENABLED = False
+# Feature switches. The operator checkboxes are ignored while a flag is False.
+_ARMOR_ENABLED = True
 _COLLISION_ENABLED = True
 
 

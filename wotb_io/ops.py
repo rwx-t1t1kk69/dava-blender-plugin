@@ -133,11 +133,11 @@ def _bake_upright(context, objs):
                 o.select_set(True)
             vl.objects.active = objs[0]
             ts.transform_pivot_point = "INDIVIDUAL_ORIGINS"
-            bpy.ops.transform.rotate(value=math.radians(-90),
+            bpy.ops.transform.rotate(value=math.radians(90),
                                      orient_axis="X", orient_type="GLOBAL")
             bpy.ops.object.transform_apply(rotation=True, location=False,
                                            scale=False)
-            bpy.ops.transform.rotate(value=math.radians(90),
+            bpy.ops.transform.rotate(value=math.radians(-90),
                                      orient_axis="X", orient_type="GLOBAL")
         context.view_layer.update()
         return restore

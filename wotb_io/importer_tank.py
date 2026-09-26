@@ -151,6 +151,15 @@ def _load_image(path):
             name=os.path.basename(path), width=w, height=h, alpha=True,
         )
         img.pixels.foreach_set(px)
+        # DAVA/Blitz PVR textures pack shader data (masks, ~0.4 constants) in
+        # the alpha channel — it is NOT an opacity mask. Mark the image
+        # CHANNEL_PACKED so Blender does not blend the RGB against it and does
+        # not render the surface see-through in Solid / EEVEE. The alpha bits
+        # stay available as a separate output for anyone who needs them.
+        try:
+            img.alpha_mode = "CHANNEL_PACKED"
+        except (AttributeError, TypeError):
+            pass
         img.pack()
         img["wotb_source"] = path
         return img

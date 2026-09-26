@@ -65,4 +65,54 @@ public static class WotbColliders
         else
             Debug.Log($"[WoTB] Set up {converted} convex MeshCollider(s).");
     }
+
+    // ------------------------------------------------------------------
+    // Orientation fix.
+    //
+    // Blender is Z-up, Unity is Y-up. Exporting with Blender's own "Apply
+    // Transform" bake fixes the orientation but shatters parented hierarchies
+    // (the tank's turret / wheels fly apart), so the add-on leaves it off — the
+    // model then imports with a -90° X rotation on the root and looks tipped
+    // ("on its rear") in previews / when the root rotation is ignored.
+    //
+    // The clean fix is Unity's own "Bake Axis Conversion" on the model
+    // importer: Unity bakes the axis change into the meshes WITHOUT breaking
+    // the hierarchy, so the model stands upright everywhere and the root stays
+    // at identity. Select the imported .fbx asset(s) in the Project window (or
+    // the scene instances) and run this.
+    // ------------------------------------------------------------------
+
+    [MenuItem("Tools/WoTB/Fix Orientation (Bake Axis Conversion)")]
+    private static void FixOrientation()
+    {
+        int fixedCount = 0;
+        foreach (Object sel in Selection.objects)
+        {
+            string path = AssetDatabase.GetAssetPath(sel);
+            if (string.IsNullOrEmpty(path) && sel is GameObject go)
+            {
+                Object src = PrefabUtility.GetCorrespondingObjectFromSource(go);
+                if (src != null)
+                    path = AssetDatabase.GetAssetPath(src);
+            }
+            if (string.IsNullOrEmpty(path))
+                continue;
+
+            var imp = AssetImporter.GetAtPath(path) as ModelImporter;
+            if (imp == null)
+                continue;
+
+            imp.bakeAxisConversion = true;
+            imp.SaveAndReimport();
+            fixedCount++;
+        }
+
+        if (fixedCount == 0)
+            Debug.LogWarning(
+                "[WoTB] Select the imported tank .fbx asset(s) in the Project " +
+                "window (or their scene instances), then run this again.");
+        else
+            Debug.Log($"[WoTB] Baked axis conversion on {fixedCount} model(s) — " +
+                      "they should now stand upright.");
+    }
 }

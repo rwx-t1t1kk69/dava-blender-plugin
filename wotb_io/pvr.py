@@ -49,13 +49,17 @@ def _decode_rgba4444(buf: bytes, w: int, h: int):
 
 
 def _decode_rgb565(buf: bytes, w: int, h: int):
+    # Standard R5G6B5: red in the high 5 bits, blue in the low 5. Reading red
+    # from the low bits (as the PVR3 channel-name order literally implies)
+    # swaps red and blue and turns track textures cyan/red — DAVA stores them
+    # in the conventional layout, so decode R high / B low.
     out = [0.0] * (w * h * 4)
     view = memoryview(buf)
     for i in range(w * h):
         px = view[i * 2] | (view[i * 2 + 1] << 8)
-        r = (px & 0x001F)
+        r = (px & 0xF800) >> 11
         g = (px & 0x07E0) >> 5
-        b = (px & 0xF800) >> 11
+        b = (px & 0x001F)
         j = i * 4
         out[j    ] = r / 31.0
         out[j + 1] = g / 63.0

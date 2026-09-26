@@ -246,7 +246,7 @@ def _entity_armor_geometry(scene, entity):
 # Build
 # ---------------------------------------------------------------------------
 
-def load_armor(tank_sc2_path, collection, parent_obj, panel_offset=0.0):
+def load_armor(tank_sc2_path, collection, parent_obj, panel_offset=0.02):
     """Import the CollisionMeshes hitbox as an armor overlay with per-vertex
     thickness baked into a UV channel (`armor_mm`, mm in .x) for the Unity
     shader, plus a vertex-colour heatmap for Blender preview.
@@ -309,13 +309,21 @@ def load_armor(tank_sc2_path, collection, parent_obj, panel_offset=0.0):
         me.update()
         me.validate(clean_customdata=False)
 
+        # Lift the shell slightly off the surface along vertex normals so it
+        # reads as a clean overlay just above the tank instead of z-fighting
+        # the visual mesh (and without the X-ray look of show_in_front).
+        if panel_offset:
+            for v in me.vertices:
+                v.co += v.normal * panel_offset
+            me.update()
+
         obj = bpy.data.objects.new(name, me)
         collection.objects.link(obj)
         obj.parent = root
         obj.data.materials.append(mat)
         obj["wotb_armor"] = True
         obj.hide_render = True
-        obj.show_in_front = True          # draw over the tank for inspection
+        obj.show_in_front = False
 
         for t in thickness:
             if t > 0.0:

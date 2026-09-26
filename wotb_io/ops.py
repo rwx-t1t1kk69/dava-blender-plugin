@@ -389,16 +389,17 @@ class WOTB_OT_export_unity_fbx(bpy.types.Operator, ExportHelper):
     )
 
     apply_transform: BoolProperty(
-        name="Apply transform (upright in Unity)",
+        name="Apply transform (flat objects only)",
         description=(
             "Bake Blender's Z-up → Unity Y-up axis conversion into the mesh "
-            "data (FBX 'Apply Transform'). Without it Unity compensates with a "
-            "~-90° X rotation on the root: the model looks right in a scene but "
-            "lies on its back in asset previews / prefab thumbnails. "
-            "Turn this OFF when exporting baked object animations (e.g. the "
-            "hangar flyover planes) — baking the transform can corrupt those"
+            "data (FBX 'Apply Transform') so Unity asset previews stand upright. "
+            "WARNING: this corrupts PARENTED HIERARCHIES — a tank's turret / "
+            "wheels fold up and scatter, and baked animations break. Leave it "
+            "OFF for tanks and hangars (the model is still correct in a scene; "
+            "only the preview thumbnail is tipped). Enable only for a single "
+            "flat mesh with no parenting"
         ),
-        default=True,
+        default=False,
     )
 
     def execute(self, context):

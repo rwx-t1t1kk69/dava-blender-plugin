@@ -9,6 +9,10 @@ import struct
 
 PVR3_MAGIC = 0x03525650  # 'PVR' + version 3
 
+# Bump when the decode logic changes so importers re-decode instead of reusing
+# a previously-cached (possibly wrongly-decoded) image from the .blend.
+DECODE_VERSION = 2
+
 
 def _decode_pixel_format(pf: bytes):
     """PVR3 pixel format is 8 bytes.
@@ -113,6 +117,7 @@ def decode_top_mip(path: str):
 
     fmt = _decode_pixel_format(pf)
     body_off = 52 + meta_size
+    print(f"[wotb_io] PVR decode: {path}  fmt={fmt}  {width}x{height}")
 
     if fmt[0] == "channels" and fmt[1] == "rgba" and fmt[2] == (4, 4, 4, 4):
         bpp = 16

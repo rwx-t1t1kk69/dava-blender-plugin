@@ -246,10 +246,16 @@ def _entity_armor_geometry(scene, entity):
 # Build
 # ---------------------------------------------------------------------------
 
-def load_armor(tank_sc2_path, collection, parent_obj, panel_offset=0.02):
+def load_armor(tank_sc2_path, collection, parent_obj, visual_scene=None,
+               panel_offset=0.02):
     """Import the CollisionMeshes hitbox as an armor overlay with per-vertex
     thickness baked into a UV channel (`armor_mm`, mm in .x) for the Unity
     shader, plus a vertex-colour heatmap for Blender preview.
+
+    Each armor part is placed with the matching VISUAL entity's world transform
+    (hull → visual hull, turret_01 → visual turret_01) so it lines up with the
+    rendered model. The collision file's own transforms sit the turret too low,
+    so they are only a fallback for parts with no visual match.
 
     Returns the parent Empty holding the armor pieces, or None."""
     coll_path = find_collision_file(tank_sc2_path)
@@ -258,7 +264,19 @@ def load_armor(tank_sc2_path, collection, parent_obj, panel_offset=0.02):
         return None
 
     scene = sc2_reader.load_sc2(coll_path)
-    dx, dy, dz = compute_collision_alignment(tank_sc2_path, scene)
+
+    # Placement comes from the visual scene: {part name -> world matrix}.
+    vis_world = {}
+    if visual_scene is not None:
+        for e, w in _entity_world_matrices(visual_scene):
+            n = e.get("name")
+            if n and n not in vis_world:
+                vis_world[n] = w
+
+    # Fallback for parts absent from the visual scene: collision transform,
+    # shifted to the visual hull's belly height.
+    _, _, dz = compute_collision_alignment(tank_sc2_path, scene)
+    dz_shift = Matrix.Translation((0.0, 0.0, dz))
 
     base = os.path.splitext(os.path.basename(tank_sc2_path))[0]
     root = bpy.data.objects.new(f"{base}_armor", None)
@@ -266,20 +284,26 @@ def load_armor(tank_sc2_path, collection, parent_obj, panel_offset=0.02):
     root.empty_display_size = 0.15
     collection.objects.link(root)
     root.parent = parent_obj
-    root.location = (dx, dy, dz)          # collision-frame → visual-frame
     root["wotb_armor"] = True
 
     mat = _make_armor_material()
     built = 0
     tmin, tmax = 1e30, -1e30
-    for entity, world in _entity_world_matrices(scene):
+    for entity, coll_world in _entity_world_matrices(scene):
         verts, tris, thickness = _entity_armor_geometry(scene, entity)
         if not verts or not tris:
             continue
 
+        # Prefer the visual part's placement; the collision entity's raw verts
+        # are in the same part-local space, so the visual world matrix lands
+        # them exactly on the rendered part.
+        place = vis_world.get(entity.get("name"))
+        if place is None:
+            place = dz_shift @ coll_world
+
         wverts = []
         for p in verts:
-            co = world @ Vector((p[0], p[1], p[2]))
+            co = place @ Vector((p[0], p[1], p[2]))
             wverts.append((co.x, co.y, co.z))
 
         name = f"{entity.get('name') or 'part'}_armor"

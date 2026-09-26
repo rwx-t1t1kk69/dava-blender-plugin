@@ -99,7 +99,8 @@ def _find_cached_image(path):
     the datablock name, so same-named textures from different folders don't
     collide on a single Blender Image."""
     for im in bpy.data.images:
-        if im.get("wotb_source") == path:
+        if (im.get("wotb_source") == path
+                and im.get("wotb_pvr_ver") == pvr.DECODE_VERSION):
             return im
     return None
 
@@ -131,6 +132,7 @@ def _load_image(path):
             pass
         img.pack()
         img["wotb_source"] = path
+        img["wotb_pvr_ver"] = pvr.DECODE_VERSION
         return img
     try:
         return bpy.data.images.load(path, check_existing=True)

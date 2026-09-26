@@ -391,6 +391,19 @@ class WOTB_OT_export_unity_fbx(bpy.types.Operator, ExportHelper):
         default=True,
     )
 
+    apply_transform: BoolProperty(
+        name="Apply transform (upright in Unity)",
+        description=(
+            "Bake Blender's Z-up → Unity Y-up axis conversion into the mesh "
+            "data (FBX 'Apply Transform'). Without it Unity compensates with a "
+            "~-90° X rotation on the root: the model looks right in a scene but "
+            "lies on its back in asset previews / prefab thumbnails. "
+            "Turn this OFF when exporting baked object animations (e.g. the "
+            "hangar flyover planes) — baking the transform can corrupt those"
+        ),
+        default=True,
+    )
+
     def execute(self, context):
         types = {"EMPTY", "MESH"}
         if self.include_lights:
@@ -404,14 +417,16 @@ class WOTB_OT_export_unity_fbx(bpy.types.Operator, ExportHelper):
             bake_anim_use_all_bones=False,
             add_leaf_bones=False,
             mesh_smooth_type="FACE",
-            # Unity wants Y-up / -Z forward. We deliberately do NOT
-            # bake_space_transform — it can corrupt baked animations (the
-            # 9May hangar planes) and normals. Unity applies its own import
-            # rotation and the prefab lands upright anyway.
+            # Unity wants Y-up / -Z forward. With apply_transform (Apply
+            # Transform / bake_space_transform) the axis conversion is baked
+            # into the vertices, so the Unity root stays at identity and asset
+            # previews stand upright. It is exposed as an option because baking
+            # can corrupt baked object animations, so animated hangar exports
+            # should turn it off.
             axis_up="Y",
             axis_forward="-Z",
             apply_scale_options="FBX_SCALE_ALL",
-            bake_space_transform=False,
+            bake_space_transform=self.apply_transform,
             path_mode="AUTO",
         )
         try:

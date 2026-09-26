@@ -507,7 +507,7 @@ class WOTBImporter:
                 continue
             if int(obj.get("wotb_lod", 0)) != 0:
                 continue
-            grp = self._collision_group_of(obj.name)
+            grp = armor_mod._armor_part_key(obj.name)
             if grp is None:
                 continue
             M = obj.matrix_world

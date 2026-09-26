@@ -24,6 +24,7 @@ inside Blender.
     200+            → red
 """
 import os
+import re
 import struct
 
 import bpy
@@ -246,10 +247,20 @@ def _entity_armor_geometry(scene, entity):
 # Build
 # ---------------------------------------------------------------------------
 
-def _armor_group_of(name):
+_TURRET_RE = re.compile(r"(turret_?\d+)")
+
+
+def _armor_part_key(name):
+    """Group key for an armor part. Each numbered turret gets its own key
+    (turret_01, turret_02, …) so multi-turret tanks don't merge into one shell;
+    the hull is a single 'hull'. Works for both collision entity names and
+    imported object names (e.g. 'turret_01_LOD0')."""
     n = (name or "").lower()
     if n.startswith("hull"):
         return "hull"
+    m = _TURRET_RE.match(n)
+    if m:
+        return m.group(1)
     if n.startswith("turret"):
         return "turret"
     return None
@@ -294,7 +305,7 @@ def load_armor(tank_sc2_path, collection, parent_obj, visual_bboxes=None,
     # parts keep their correct relative layout inside the group.
     groups = {}
     for entity, cworld in _entity_world_matrices(scene):
-        grp = _armor_group_of(entity.get("name"))
+        grp = _armor_part_key(entity.get("name"))
         if grp is None:
             continue
         rv, rt, rk = _entity_armor_geometry(scene, entity)
@@ -328,14 +339,24 @@ def load_armor(tank_sc2_path, collection, parent_obj, visual_bboxes=None,
         if not verts or not tris:
             continue
 
-        # Snap the group's bbox centre onto the visual part's bbox centre.
+        # Fit the group's bbox exactly onto the visual part's bbox (translate +
+        # per-axis scale). Centre-matching alone left it slightly low because
+        # the hitbox and the visual part differ a little in size; a full fit
+        # makes the shell span exactly the same volume.
         if grp in vb:
             amn, amx = _bbox(verts)
             vmn, vmx = vb[grp]
-            dxc = (vmn[0] + vmx[0]) * 0.5 - (amn[0] + amx[0]) * 0.5
-            dyc = (vmn[1] + vmx[1]) * 0.5 - (amn[1] + amx[1]) * 0.5
-            dzc = (vmn[2] + vmx[2]) * 0.5 - (amn[2] + amx[2]) * 0.5
-            verts = [(x + dxc, y + dyc, z + dzc) for (x, y, z) in verts]
+
+            def _fit(a0, a1, v0, v1, x):
+                asz = a1 - a0
+                if asz <= 1e-6:
+                    return (v0 + v1) * 0.5
+                return v0 + (x - a0) * (v1 - v0) / asz
+
+            verts = [(_fit(amn[0], amx[0], vmn[0], vmx[0], x),
+                      _fit(amn[1], amx[1], vmn[1], vmx[1], y),
+                      _fit(amn[2], amx[2], vmn[2], vmx[2], z))
+                     for (x, y, z) in verts]
 
         name = f"{grp}_armor"
         me = bpy.data.meshes.new(name)

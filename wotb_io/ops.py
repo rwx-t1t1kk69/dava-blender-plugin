@@ -73,12 +73,12 @@ class WOTB_OT_import_sc2(bpy.types.Operator, ImportHelper):
         name="Skip broken (crash) parts",
         description=(
             "DAVA ships broken-track / broken-chassis fragments in the same "
-            "file (e.g. `chassis_track_crash_L/R`). They're hidden by the "
-            "game unless the tank is destroyed — but they overlap the normal "
-            "tracks and cause the magenta / Z-fighting shards you see under "
-            "the hull"
+            "file (e.g. `chassis_track_crash_L/R`). By default they ARE "
+            "imported, into a hidden `<file>_crash` collection you can toggle "
+            "on to see the destroyed variant — so they don't overlap the intact "
+            "parts. Enable this only to drop them entirely"
         ),
-        default=True,
+        default=False,
     )
 
     load_armor: BoolProperty(

@@ -332,6 +332,7 @@ class WOTBImporter:
         self.armor_root = None
         self._root_collection = None
         self._lod_collections = {}   # lod int -> bpy.types.Collection
+        self._crash_collection_obj = None
 
     def run(self):
         scene = sc2_reader.load_sc2(self.path)
@@ -395,17 +396,30 @@ class WOTBImporter:
             self._lod_collections[key] = col
         return col
 
-    def _import_entity(self, scene, entity, parent, collection):
+    def _crash_collection(self):
+        """Return (creating on first use) the hidden `<file>_crash` collection
+        for the game's broken-tank fragments (chassis_track_crash_L/R, …). They
+        are imported so the destroyed variant is available, but hidden by default
+        so they don't overlap the intact parts (the magenta / Z-fighting shards)."""
+        col = self._crash_collection_obj
+        if col is None:
+            base = os.path.splitext(os.path.basename(self.path))[0]
+            col = bpy.data.collections.new(f"{base}_crash")
+            parent = self._root_collection or bpy.context.scene.collection
+            parent.children.link(col)
+            col.hide_viewport = True
+            col.hide_render = True
+            self._crash_collection_obj = col
+        return col
+
+    def _import_entity(self, scene, entity, parent, collection, crash=False):
         name = entity.get("name") or "Entity"
-        if self.skip_crash_variants and "crash" in name.lower():
-            # DAVA ships broken-tank fragments (chassis_track_crash_L/R, ...)
-            # in the same scene — hidden by the game unless the tank is
-            # destroyed. They otherwise overlap normal parts and cause the
-            # magenta / Z-fighting shards visible under the hull.
-            return
+        crash = crash or ("crash" in name.lower())
+        if crash and self.skip_crash_variants:
+            return   # user chose to drop broken-tank fragments entirely
         matrix = _dava_matrix_to_blender(sc2_reader.get_transform_matrix(entity))
 
-        obj = self._build_entity_object(scene, entity, name, collection)
+        obj = self._build_entity_object(scene, entity, name, collection, crash)
         obj.matrix_local = matrix
         obj.parent = parent
         # Preserve DAVA id / flags for round-trip identification.
@@ -413,25 +427,32 @@ class WOTBImporter:
         _set_int_prop(obj, "wotb_flags", entity.get("flags", 0))
 
         for child in entity.get("__children", ()):
-            self._import_entity(scene, child, parent=obj, collection=collection)
+            self._import_entity(scene, child, parent=obj, collection=collection,
+                                crash=crash)
 
-    def _build_entity_object(self, scene, entity, name, collection):
+    def _build_entity_object(self, scene, entity, name, collection, crash=False):
         batches = sc2_reader.get_render_batches(entity)
         if self.import_lods == "lod0":
             batches = [b for b in batches if b.get("__lodIndex", 0) == 0]
         if self.skip_shadow_volumes:
             batches = [b for b in batches if not _batch_uses_shadow_volume(scene, b)]
 
+        # Empties / group nodes go in the crash collection too when crash, so
+        # the whole broken sub-tree toggles together.
+        node_col = self._crash_collection() if crash else collection
+
         if not batches:
             # Empty (transform-only) helper — hardpoints (HP_*), markers, etc.
             obj = bpy.data.objects.new(name, None)
             obj.empty_display_type = "PLAIN_AXES"
             obj.empty_display_size = 0.2
-            collection.objects.link(obj)
+            node_col.objects.link(obj)
+            if crash:
+                obj["wotb_crash"] = True
             return obj
 
         if len(batches) == 1:
-            return self._build_batch_object(scene, batches[0], name)
+            return self._build_batch_object(scene, batches[0], name, crash)
 
         # Multiple batches — usually the same part at several LOD levels (and
         # occasionally several materials at one LOD). Keep them under one group
@@ -440,7 +461,9 @@ class WOTBImporter:
         group = bpy.data.objects.new(name, None)
         group.empty_display_type = "PLAIN_AXES"
         group.empty_display_size = 0.2
-        collection.objects.link(group)
+        node_col.objects.link(group)
+        if crash:
+            group["wotb_crash"] = True
 
         counts = {}
         for b in batches:
@@ -448,11 +471,11 @@ class WOTBImporter:
             n = counts.get(lod, 0)
             counts[lod] = n + 1
             sub_name = f"{name}_LOD{lod}" + (f"_b{n}" if n else "")
-            sub = self._build_batch_object(scene, b, sub_name)
+            sub = self._build_batch_object(scene, b, sub_name, crash)
             sub.parent = group
         return group
 
-    def _build_batch_object(self, scene, batch, name):
+    def _build_batch_object(self, scene, batch, name, crash=False):
         pgid = batch.get("rb.datasource")
         matid = batch.get("rb.nmatname")
         pg = scene.polygroups.get(pgid)
@@ -461,9 +484,11 @@ class WOTBImporter:
 
         mesh = _build_mesh_from_polygroup(scene, pg, name)
         obj = bpy.data.objects.new(name, mesh)
-        # Link into the per-LOD collection so all LODs import but stay separated.
+        # Crash fragments go in the hidden crash collection; everything else in
+        # its per-LOD collection so all LODs import but stay separated.
         lod = _lod_key(batch.get("__lodIndex", 0))
-        self._lod_collection(lod).objects.link(obj)
+        target = self._crash_collection() if crash else self._lod_collection(lod)
+        target.objects.link(obj)
 
         mat = _make_or_reuse_material(
             scene, matid, self.mat_cache, self.sc2_dir, self.data_root,
@@ -474,7 +499,11 @@ class WOTBImporter:
         _set_int_prop(obj, "wotb_pgid", pgid if pgid is not None else -1)
         _set_int_prop(obj, "wotb_matid", matid if matid is not None else -1)
         _set_int_prop(obj, "wotb_lod", lod)
-        self._built_meshes.append(obj)
+        if crash:
+            obj["wotb_crash"] = True
+        else:
+            # Only intact meshes feed the collision hull and armor bboxes.
+            self._built_meshes.append(obj)
         return obj
 
     # ---------------- collision (single convex hull) ----------------

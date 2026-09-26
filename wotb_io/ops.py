@@ -95,13 +95,15 @@ class WOTB_OT_import_sc2(bpy.types.Operator, ImportHelper):
     )
 
     generate_collision: BoolProperty(
-        name="Generate collision hull",
+        name="Generate collision",
         description=(
-            "Build a simplified convex-hull shell of the whole tank made of "
-            "large flat polygons — used for physics collisions instead of the "
-            "detailed visual mesh. (Temporarily disabled in code.)"
+            "Build convex collider shells that wrap the hull and the turret "
+            "separately (one convex hull per part) from the game's "
+            "CollisionMeshes hitbox, or the visual mesh as a fallback. Each "
+            "piece is named `<file>_collider_<part>`, hidden from render, and "
+            "tagged for a Unity MeshCollider (Convex)"
         ),
-        default=False,
+        default=True,
     )
 
     collision_dissolve_deg: FloatProperty(
@@ -109,21 +111,21 @@ class WOTB_OT_import_sc2(bpy.types.Operator, ImportHelper):
         description=(
             "Merge convex-hull triangles whose normals differ by less than "
             "this angle into single flat polygons. Higher = fewer, bigger "
-            "faces (rougher shell)"
+            "faces (lighter collider)"
         ),
-        default=18.0,
+        default=12.0,
         min=1.0,
         max=45.0,
     )
 
     collision_rigid_body: BoolProperty(
-        name="Add rigid body physics",
+        name="Add Blender rigid body",
         description=(
-            "Also mark the collision shell as a passive rigid body with a "
-            "convex-hull shape, so Blender physics uses it instead of the "
-            "visible mesh"
+            "Also mark each collider piece as a passive rigid body with a "
+            "convex-hull shape for Blender's own physics. Off by default — the "
+            "colliders are meant for Unity"
         ),
-        default=True,
+        default=False,
     )
 
     def execute(self, context):
@@ -150,12 +152,9 @@ class WOTB_OT_import_sc2(bpy.types.Operator, ImportHelper):
             return {"CANCELLED"}
 
         col_msg = ""
-        col_obj = getattr(wotb, "collision_obj", None)
         if self.generate_collision:
-            if col_obj is not None:
-                col_msg = f", collision '{col_obj.name}' ({len(col_obj.data.polygons)} faces)"
-            else:
-                col_msg = ", collision: SKIPPED (see system console)"
+            summary = getattr(wotb, "collision_summary", "") or "SKIPPED (see console)"
+            col_msg = f", collision: {summary}"
         armor_msg = ""
         armor_root = getattr(wotb, "armor_root", None)
         if self.load_armor:

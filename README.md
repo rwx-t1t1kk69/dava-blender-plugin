@@ -12,7 +12,7 @@ DAVA parsing core instead of duplicating it.
 
 | Menu | What it does |
 |------|--------------|
-| `File > Import > WoTB 3.10 Tank (.sc2)` | Tank models: meshes, materials, hardpoints, all LODs split into per-LOD collections (`<file>_LOD0`, `_LOD1`, … — LOD1+ hidden by default), armor-thickness heatmap overlay, physics collision hull (rigid body), crash-part filtering |
+| `File > Import > WoTB 3.10 Tank (.sc2)` | Tank models: meshes, materials, hardpoints, all LODs split into per-LOD collections (`<file>_LOD0`, `_LOD1`, … — LOD1+ hidden by default), per-part convex colliders (hull + turret) for Unity, crash-part filtering. Armor overlay exists but is temporarily disabled in code. |
 | `File > Import > WoTB 3.10 Hangar / Map (.sc2)` | Scenes: meshes, materials, heightmap landscape, lights, lamp/smoke/particle & sound marker empties, baked animations |
 | `File > Export > WoTB Scene → Unity (.fbx)` | Y-up / -Z-forward FBX carrying `wotb_*` custom props and `WOTBFX_*` markers for the Unity editor script |
 
@@ -44,10 +44,16 @@ wotb_io/
 └── importer_scene.py      hangar/map importer (WOTBSceneImporter)
 ```
 
-> The FBX→Unity round-trip relies on a companion Unity Editor script
-> (`unity/Editor/WotbHangarFx.cs`) that rebuilds animated ParticleSystems and
-> lights from the exported `WOTBFX_*` markers. That script is not part of this
-> repository yet.
+### Unity helpers (`unity/Editor/`)
+
+- **`WotbColliders.cs`** — after importing a tank FBX, select it in the
+  Hierarchy and run `Tools > WoTB > Setup Colliders On Selection`. It turns
+  every `*_collider_*` object into a convex `MeshCollider` and strips its
+  renderer, so the tank collides with the world without drawing the collision
+  shells.
+- **`WotbHangarFx.cs`** *(not in this repo yet)* — the hangar/map round-trip
+  relies on a companion script that rebuilds animated ParticleSystems and
+  lights from the exported `WOTBFX_*` markers.
 
 ## Install
 

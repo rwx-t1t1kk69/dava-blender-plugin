@@ -1,0 +1,68 @@
+// WoTB collider setup for Unity.
+//
+// The Blender add-on exports tank collision shells as convex meshes named
+// "<file>_collider_hull" / "<file>_collider_turret". On FBX import those come
+// in as ordinary GameObjects with a MeshFilter + MeshRenderer, so they would
+// render as solid blocks over the tank. This editor tool turns every such
+// object into a real collider instead:
+//
+//   * adds a MeshCollider with Convex = true (so it collides with objects),
+//   * removes the MeshRenderer so the shell is invisible,
+//   * removes the MeshFilter (the MeshCollider keeps its own mesh reference).
+//
+// Drop this file anywhere under an "Editor" folder in your Unity project.
+// Then select the imported tank(s) in the Hierarchy and run
+// Tools > WoTB > Setup Colliders On Selection.
+
+using UnityEditor;
+using UnityEngine;
+
+public static class WotbColliders
+{
+    // Objects whose name contains this token are treated as collider shells.
+    private const string ColliderToken = "_collider_";
+
+    [MenuItem("Tools/WoTB/Setup Colliders On Selection")]
+    private static void SetupOnSelection()
+    {
+        int converted = 0;
+
+        foreach (GameObject root in Selection.gameObjects)
+        {
+            // include inactive children too
+            foreach (MeshFilter mf in root.GetComponentsInChildren<MeshFilter>(true))
+            {
+                GameObject go = mf.gameObject;
+                if (!go.name.Contains(ColliderToken))
+                    continue;
+
+                Mesh mesh = mf.sharedMesh;
+                if (mesh == null)
+                    continue;
+
+                MeshCollider mc = go.GetComponent<MeshCollider>();
+                if (mc == null)
+                    mc = Undo.AddComponent<MeshCollider>(go);
+                mc.sharedMesh = mesh;
+                mc.convex = true;
+
+                MeshRenderer mr = go.GetComponent<MeshRenderer>();
+                if (mr != null)
+                    Undo.DestroyObjectImmediate(mr);
+
+                // The MeshCollider holds its own reference to the mesh, so the
+                // MeshFilter is no longer needed for rendering or collision.
+                Undo.DestroyObjectImmediate(mf);
+
+                converted++;
+            }
+        }
+
+        if (converted == 0)
+            Debug.LogWarning(
+                "[WoTB] No collider objects found. Select the imported tank " +
+                "root(s); collider parts are named with \"" + ColliderToken + "\".");
+        else
+            Debug.Log($"[WoTB] Set up {converted} convex MeshCollider(s).");
+    }
+}

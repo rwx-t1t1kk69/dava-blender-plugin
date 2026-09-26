@@ -14,10 +14,11 @@ from . import armor as armor_mod
 _C_INT_MIN = -(1 << 31)
 _C_INT_MAX = (1 << 31) - 1
 
-# Temporarily disabled per user request. Set back to True to restore the armor
-# overlay and the physics collision hull (the operator toggles are ignored
-# while this is False).
-_ARMOR_COLLISION_ENABLED = False
+# Collision colliders are back on (new convex-per-part builder). The armor
+# overlay stays temporarily disabled. Flip either flag to toggle; the operator
+# checkboxes are ignored while its flag is False.
+_ARMOR_ENABLED = False
+_COLLISION_ENABLED = True
 
 
 def _set_alpha_clip(mat):
@@ -327,6 +328,7 @@ class WOTBImporter:
         self.mat_cache = {}
         self._built_meshes = []
         self.collision_obj = None
+        self.collision_summary = ""
         self.armor_root = None
         self._root_collection = None
         self._lod_collections = {}   # lod int -> bpy.types.Collection
@@ -347,10 +349,15 @@ class WOTBImporter:
             self._import_entity(scene, root_entity, parent=file_root, collection=collection)
 
         self.collision_obj = None
-        if _ARMOR_COLLISION_ENABLED and self.generate_collision:
-            self.collision_obj = self._build_collision_hull(file_root, collection)
+        if _COLLISION_ENABLED and self.generate_collision:
+            try:
+                self._build_colliders(file_root, collection)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print(f"[wotb_io] collision: failed: {e}")
 
-        if _ARMOR_COLLISION_ENABLED and self.load_armor:
+        if _ARMOR_ENABLED and self.load_armor:
             try:
                 self.armor_root = armor_mod.load_armor(
                     self.path, collection, file_root,
@@ -468,64 +475,145 @@ class WOTBImporter:
         self._built_meshes.append(obj)
         return obj
 
-    # ---------------- collision hull ----------------
-    def _build_collision_hull(self, file_root, collection):
-        # Prefer the game's own hitbox geometry from `CollisionMeshes/` —
-        # it's already low-poly and tight around hull+turret with no
-        # tracks, no gun, and no belly overshoot. When we have it we take
-        # the real triangle mesh so the shell reads as the actual game
-        # hitbox (with concavities); Blender's rigid-body CONVEX_HULL
-        # shape wraps it back to a convex volume for physics anyway.
-        verts, tris = self._collect_collision_source_mesh()
-        if verts and tris:
-            source = "CollisionMeshes"
-            hull_from_mesh = False
-        else:
-            # Fallback: convex hull of the visual body meshes.
-            verts = self._collect_body_vertices()
-            tris = None
-            source = "visual mesh (fallback)"
-            hull_from_mesh = True
+    # ---------------- collision (convex hull per part) ----------------
+    #
+    # A tank collider should hug the hull and the turret as SEPARATE convex
+    # shells — not one big convex bag that fills the gap under the gun and
+    # between the turret and the roof, and not the exact concave hitbox (which
+    # a physics engine can't use as a single convex collider). We build one
+    # convex hull per part from the game's own CollisionMeshes hitbox when it
+    # is available, else from the visual LOD0 meshes.
+    #
+    # Each shell is a clean low-poly convex mesh named `<file>_collider_<part>`,
+    # tagged `wotb_collider = "convex"` and hidden from render. In Unity add a
+    # MeshCollider with Convex enabled to each and remove its MeshRenderer
+    # (the bundled `unity/Editor/WotbColliders.cs` does this automatically for
+    # objects whose name contains `_collider_`).
 
-        print(f"[wotb_io] collision: {len(verts)} verts, "
-              f"{'raw mesh' if tris else 'convex hull'} from {source}")
-        if len(verts) < 4:
-            print("[wotb_io] collision: not enough vertices, skipping")
+    @staticmethod
+    def _collision_group_of(name):
+        """Map an entity/object name to a collider group, or None to skip."""
+        n = (name or "").lower()
+        if n.startswith("hull"):
+            return "hull"
+        if n.startswith("turret"):
+            return "turret"
+        return None
+
+    def _collect_collision_groups(self):
+        """Return {'hull': [(x,y,z)…], 'turret': [...]} in visual-scene space.
+
+        Prefers the game's CollisionMeshes hitbox (already low-poly, aligned to
+        the visual hull); falls back to the visual LOD0 hull/turret meshes."""
+        groups = {}
+        scene, entities, z_off = armor_mod.build_collision_source(self.path)
+        if scene and entities:
+            for e in entities:
+                grp = self._collision_group_of(e.get("name"))
+                if grp is None:
+                    continue
+                M = _dava_matrix_to_blender(sc2_reader.get_transform_matrix(e))
+                bucket = groups.setdefault(grp, [])
+                for b in sc2_reader.get_render_batches(e):
+                    pg = scene.polygroups.get(b.get("rb.datasource"))
+                    if not pg:
+                        continue
+                    streams = vf.parse_vertices(
+                        pg["vertices"], pg["vertexFormat"], pg["vertexCount"],
+                    )
+                    for p in streams.get("position") or []:
+                        co = M @ Vector((p[0], p[1], p[2]))
+                        bucket.append((co.x, co.y, co.z + z_off))
+            if any(groups.values()):
+                return groups
+
+        # Fallback: the imported visual LOD0 hull / turret meshes.
+        groups = {}
+        for obj in self._built_meshes:
+            if obj.type != "MESH" or obj.data is None:
+                continue
+            if int(obj.get("wotb_lod", 0)) != 0:
+                continue
+            grp = self._collision_group_of(obj.name)
+            if grp is None:
+                continue
+            M = obj.matrix_world
+            bucket = groups.setdefault(grp, [])
+            for v in obj.data.vertices:
+                co = M @ v.co
+                bucket.append((co.x, co.y, co.z))
+        return groups
+
+    def _build_colliders(self, file_root, collection):
+        groups = self._collect_collision_groups()
+        if not any(groups.values()):
+            print("[wotb_io] collision: no hull/turret geometry found, skipping")
+            self.collision_summary = "none"
             return None
 
-        bm = bmesh.new()
-        bm_verts = [bm.verts.new(co) for co in verts]
-        bm.verts.ensure_lookup_table()
-
-        if tris is not None:
-            for a, b, c in tris:
-                try:
-                    bm.faces.new((bm_verts[a], bm_verts[b], bm_verts[c]))
-                except ValueError:
-                    pass
-        else:
-            bmesh.ops.convex_hull(bm, input=list(bm.verts), use_existing_faces=False)
-            loose = [v for v in bm.verts if not v.link_faces]
-            if loose:
-                bmesh.ops.delete(bm, geom=loose, context="VERTS")
-
-        bmesh.ops.remove_doubles(bm, verts=list(bm.verts), dist=0.001)
-        bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
-
-        # Merge nearly-coplanar tris into big flat polygons — the "rough
-        # shell of large flat faces" the user asked for.
-        bmesh.ops.dissolve_limit(
-            bm,
-            angle_limit=math.radians(self.collision_dissolve_deg),
-            use_dissolve_boundaries=False,
-            verts=list(bm.verts),
-            edges=list(bm.edges),
-            delimit=set(),
-        )
-
-        face_count = len(bm.faces)
         base = os.path.splitext(os.path.basename(self.path))[0]
-        name = f"{base}_collision"
+        root = bpy.data.objects.new(f"{base}_collision", None)
+        root.empty_display_type = "CUBE"
+        root.empty_display_size = 0.3
+        collection.objects.link(root)
+        root.parent = file_root
+        root["wotb_collision"] = True
+
+        pieces = 0
+        faces = 0
+        for grp in ("hull", "turret"):
+            verts = groups.get(grp)
+            if not verts:
+                continue
+            obj = self._make_convex_collider(
+                f"{base}_collider_{grp}", verts, collection, root,
+            )
+            if obj is None:
+                continue
+            pieces += 1
+            faces += len(obj.data.polygons)
+            if self.collision_rigid_body:
+                self._try_add_rigid_body(obj)
+
+        if pieces == 0:
+            bpy.data.objects.remove(root, do_unlink=True)
+            self.collision_summary = "none"
+            return None
+
+        self.collision_obj = root
+        self.collision_summary = f"{pieces} pieces, {faces} faces"
+        print(f"[wotb_io] collision: built {self.collision_summary}")
+        return root
+
+    def _make_convex_collider(self, name, verts, collection, parent):
+        """Build one clean convex-hull mesh object wrapping `verts`."""
+        if len(verts) < 4:
+            return None
+        bm = bmesh.new()
+        for co in verts:
+            bm.verts.new(co)
+        bm.verts.ensure_lookup_table()
+        res = bmesh.ops.convex_hull(bm, input=list(bm.verts),
+                                    use_existing_faces=False)
+        # Keep only the hull surface; drop the interior / unused points.
+        drop = set(res.get("geom_interior", [])) | set(res.get("geom_unused", []))
+        if drop:
+            bmesh.ops.delete(bm, geom=list(drop), context="VERTS")
+        if not bm.faces:
+            bm.free()
+            return None
+        bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
+        # Merge nearly-coplanar triangles into big flat faces (lighter shell).
+        if bm.edges:
+            bmesh.ops.dissolve_limit(
+                bm,
+                angle_limit=math.radians(self.collision_dissolve_deg),
+                use_dissolve_boundaries=False,
+                verts=list(bm.verts),
+                edges=list(bm.edges),
+                delimit=set(),
+            )
+
         me = bpy.data.meshes.new(name)
         bm.to_mesh(me)
         bm.free()
@@ -533,116 +621,13 @@ class WOTBImporter:
 
         obj = bpy.data.objects.new(name, me)
         collection.objects.link(obj)
-        obj.parent = file_root
+        obj.parent = parent
         obj.display_type = "WIRE"
         obj.show_in_front = True
         obj.hide_render = True
         obj.color = (0.1, 1.0, 0.3, 1.0)
-        obj["wotb_collision"] = True
-
-        if self.collision_rigid_body:
-            self._try_add_rigid_body(obj)
-
-        print(f"[wotb_io] collision: built '{name}' with {face_count} faces "
-              f"({'game hitbox' if not hull_from_mesh else 'convex fallback'})")
+        obj["wotb_collider"] = "convex"
         return obj
-
-    # DAVA tanks lay out their scene as a flat set of named sibling entities:
-    # `hull`, `turret_*`, `gun_*`, `chassis_*`, `HP_*`, `smoke`, ...
-    # We only want the body shell — corpus + turret (all the way to the top).
-    _COLLISION_INCLUDE_PREFIXES = ("hull", "turret")
-    _COLLISION_EXCLUDE_PREFIXES = (
-        "hp_",         # hardpoints (gunfire/exhaust markers)
-        "chassis",     # tracks + wheels
-        "gun",         # gun barrels
-        "smoke",       # smoke launchers
-        "wheel", "track",
-        "crash",       # broken-tank variants
-        "fire", "exhaus",
-    )
-
-    def _collect_collision_source_mesh(self):
-        """Load the game's hitbox mesh from `CollisionMeshes/`. Returns
-        (verts, tris) where verts are in visual-scene space (auto-aligned
-        to the visual hull) and tris index into `verts`. `([], [])` if the
-        collision file isn't available."""
-        scene, entities, z_off = armor_mod.build_collision_source(self.path)
-        if not scene or not entities:
-            return [], []
-        verts = []
-        tris = []
-        for e in entities:
-            m16 = sc2_reader.get_transform_matrix(e)
-            if m16 and len(m16) == 16:
-                rows = ((m16[0], m16[1], m16[2], m16[3]),
-                        (m16[4], m16[5], m16[6], m16[7]),
-                        (m16[8], m16[9], m16[10], m16[11]),
-                        (m16[12], m16[13], m16[14], m16[15]))
-                M = Matrix(rows).transposed()
-            else:
-                M = Matrix.Identity(4)
-            for b in sc2_reader.get_render_batches(e):
-                pg = scene.polygroups.get(b.get("rb.datasource"))
-                if not pg:
-                    continue
-                streams = vf.parse_vertices(
-                    pg["vertices"], pg["vertexFormat"], pg["vertexCount"],
-                )
-                indices = vf.parse_indices(
-                    pg["indices"], pg["indexFormat"], pg["indexCount"],
-                )
-                base = len(verts)
-                for p in streams.get("position") or []:
-                    co = M @ Vector((p[0], p[1], p[2]))
-                    verts.append((co.x, co.y, co.z + z_off))
-                for i in range(0, len(indices), 3):
-                    tris.append(
-                        (base + indices[i], base + indices[i + 1], base + indices[i + 2])
-                    )
-        return verts, tris
-
-    def _collect_body_vertices(self):
-        """Return world-space positions for the corpus + turret meshes only.
-
-        We deliberately skip gun barrels, tracks, wheels, hardpoints and the
-        `*_crash` broken variants — a good collision shell should hug the
-        hull and reach up to the top of the turret, without spikes for the
-        cannon or fan-out for the tracks."""
-        out = []
-        kept = []
-        for obj in self._built_meshes:
-            if obj.type != "MESH" or obj.data is None:
-                continue
-            if int(obj.get("wotb_lod", 0)) != 0:
-                continue   # only the visible LOD0 shell feeds the fallback hull
-            if not self._name_included(obj):
-                continue
-            kept.append(obj.name)
-            M = obj.matrix_world
-            for v in obj.data.vertices:
-                co = M @ v.co
-                out.append((co.x, co.y, co.z))
-        if kept:
-            print(f"[wotb_io] collision: including "
-                  f"{len(kept)} meshes: {kept[:8]}"
-                  f"{'…' if len(kept) > 8 else ''}")
-        return out
-
-    @classmethod
-    def _name_included(cls, obj):
-        """Walk obj and its ancestors — first blacklist match wins, then the
-        first whitelist match. Missing → skip."""
-        cur = obj
-        while cur is not None:
-            n = (cur.name or "").lower()
-            for p in cls._COLLISION_EXCLUDE_PREFIXES:
-                if n.startswith(p):
-                    return False
-            for p in cls._COLLISION_INCLUDE_PREFIXES:
-                if n.startswith(p):
-                    return True
-            cur = cur.parent
-        return False
 
     @staticmethod
     def _try_add_rigid_body(obj):

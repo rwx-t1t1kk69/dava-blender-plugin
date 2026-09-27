@@ -69,17 +69,20 @@ def _restore_snapshot(basis, pinv, meshes):
         o.matrix_basis = m
 
 
-def _bake_upright(context, objs):
-    """Rotate/apply so the export is upright in Unity. Returns a restore
-    callback, or None if it could not run (export proceeds un-baked)."""
-    ov = _find_view3d_ctx(context)
-    if ov is None:
-        print("[wotb_io] upright bake: no 3D viewport found, exporting as-is")
+def _prepare_export(context, objs, upright, drop):
+    """Make the export upright (rotate/apply trick) and/or sit it on the floor
+    (origin at the lowest point). Returns a restore callback, or None if nothing
+    was done. The scene is snapshotted and fully restored by the callback."""
+    objs = [o for o in objs if o.type in {"MESH", "EMPTY"}]
+    if not objs or not (upright or drop):
         return None
 
-    objs = [o for o in objs if o.type in {"MESH", "EMPTY"}]
-    if not objs:
-        return None
+    ov = _find_view3d_ctx(context) if upright else None
+    if upright and ov is None:
+        print("[wotb_io] upright bake: no 3D viewport found, skipping upright")
+        upright = False
+        if not drop:
+            return None
 
     ts = context.scene.tool_settings
     vl = context.view_layer
@@ -125,26 +128,45 @@ def _bake_upright(context, objs):
                 pass
         context.view_layer.update()
 
-        with context.temp_override(**ov):
-            if context.object and context.object.mode != "OBJECT":
-                bpy.ops.object.mode_set(mode="OBJECT")
-            bpy.ops.object.select_all(action="DESELECT")
+        if upright:
+            with context.temp_override(**ov):
+                if context.object and context.object.mode != "OBJECT":
+                    bpy.ops.object.mode_set(mode="OBJECT")
+                bpy.ops.object.select_all(action="DESELECT")
+                for o in objs:
+                    o.select_set(True)
+                vl.objects.active = objs[0]
+                ts.transform_pivot_point = "INDIVIDUAL_ORIGINS"
+                bpy.ops.transform.rotate(value=math.radians(90),
+                                         orient_axis="X", orient_type="GLOBAL")
+                bpy.ops.object.transform_apply(rotation=True, location=False,
+                                               scale=False)
+                bpy.ops.transform.rotate(value=math.radians(-90),
+                                         orient_axis="X", orient_type="GLOBAL")
+            context.view_layer.update()
+
+        if drop:
+            # Move the whole model so its lowest point sits at Z=0 (Unity Y=0),
+            # so the prefab rests on the ground instead of half-sunk.
+            min_z = None
             for o in objs:
-                o.select_set(True)
-            vl.objects.active = objs[0]
-            ts.transform_pivot_point = "INDIVIDUAL_ORIGINS"
-            bpy.ops.transform.rotate(value=math.radians(90),
-                                     orient_axis="X", orient_type="GLOBAL")
-            bpy.ops.object.transform_apply(rotation=True, location=False,
-                                           scale=False)
-            bpy.ops.transform.rotate(value=math.radians(-90),
-                                     orient_axis="X", orient_type="GLOBAL")
-        context.view_layer.update()
+                if o.type == "MESH" and o.data is not None:
+                    mw = o.matrix_world
+                    for v in o.data.vertices:
+                        z = (mw @ v.co).z
+                        if min_z is None or z < min_z:
+                            min_z = z
+            if min_z is not None and abs(min_z) > 1e-6:
+                for o in objs:
+                    if o.parent is None:
+                        o.location.z -= min_z
+                context.view_layer.update()
+
         return restore
     except Exception as e:
         import traceback
         traceback.print_exc()
-        print(f"[wotb_io] upright bake failed, exporting as-is: {e}")
+        print(f"[wotb_io] export prepare failed, exporting as-is: {e}")
         try:
             restore()
         except Exception:
@@ -520,10 +542,20 @@ class WOTB_OT_export_unity_fbx(bpy.types.Operator, ExportHelper):
         name="Upright for Unity",
         description=(
             "Bake the Z-up → Y-up orientation so the model stands upright in "
-            "Unity with an identity root (rotate -90° X → apply → rotate +90° X "
+            "Unity with an identity root (rotate 90° X → apply → rotate -90° X "
             "trick). Keeps the parented hierarchy intact, unlike the FBX "
             "'Apply Transform' bake. The scene is snapshotted and restored "
             "around the export, so nothing is left changed here"
+        ),
+        default=True,
+    )
+
+    drop_to_floor: BoolProperty(
+        name="Sit on ground (origin at bottom)",
+        description=(
+            "Shift the model so its lowest point (the tracks) sits at the "
+            "origin, so the prefab rests on the ground in Unity instead of "
+            "being half-sunk. The DAVA origin is roughly at the hull centre"
         ),
         default=True,
     )
@@ -557,12 +589,14 @@ class WOTB_OT_export_unity_fbx(bpy.types.Operator, ExportHelper):
         )
 
         restore = None
-        if self.apply_transform:
+        if self.apply_transform or self.drop_to_floor:
             if self.selection_only:
                 objs = list(context.selected_objects)
             else:
                 objs = list(context.scene.objects)
-            restore = _bake_upright(context, objs)
+            restore = _prepare_export(
+                context, objs, self.apply_transform, self.drop_to_floor,
+            )
 
         try:
             try:
